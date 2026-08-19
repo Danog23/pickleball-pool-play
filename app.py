@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from collections import defaultdict
+import itertools
 
 st.set_page_config(page_title="Pickleball Pool Play", layout="wide")
 st.title("Pickleball Pool Play + Knockout")
@@ -90,24 +91,49 @@ def calc_standings(pool_players, scores_dict, matches):
 def find_relevant_ties(ranking):
     """Find ties that affect positions 1-4."""
     ties = []
-    n = len(ranking)
+    n = min(4, len(ranking))
     if n < 2:
         return ties
 
-    # We only care about the top 4 positions
-    relevant = ranking[:min(4, n)]
-
-    # Group by (diff, wins)
-    from itertools import groupby
-    for score, group in groupby(relevant, key=lambda x: (x["diff"], x["wins"])):
-        players = [p["name"] for p in group]
-        if len(players) > 1:
+    i = 0
+    while i < n:
+        j = i + 1
+        while j < len(ranking) and ranking[j]["diff"] == ranking[i]["diff"] and ranking[j]["wins"] == ranking[i]["wins"]:
+            j += 1
+        group = ranking[i:j]
+        if len(group) > 1 and i < 4:
             ties.append({
-                "players": players,
-                "score": score[0],
-                "needed": len(players)  # we need full order
+                "players": [p["name"] for p in group],
+                "start_pos": i + 1,
+                "count": len(group)
             })
+        i = j
     return ties
+
+def suggest_playoff(players):
+    """Return suggested matchups for skinny singles."""
+    n = len(players)
+    if n == 2:
+        return [f"**{players[0]}** vs **{players[1]}**"]
+    if n == 3:
+        return [
+            f"**{players[0]}** gets a bye",
+            f"**{players[1]}** vs **{players[2]}**",
+            f"Winner plays **{players[0]}**"
+        ]
+    if n == 4:
+        return [
+            f"Semi 1: **{players[0]}** vs **{players[1]}**",
+            f"Semi 2: **{players[2]}** vs **{players[3]}**",
+            "Winners play for higher places, Losers play for lower places"
+        ]
+    # Fallback for more than 4
+    pairs = []
+    for i in range(0, n - 1, 2):
+        pairs.append(f"**{players[i]}** vs **{players[i+1]}**")
+    if n % 2 == 1:
+        pairs.append(f"**{players[-1]}** gets a bye")
+    return pairs
 
 def build_interleaved_queue(pools):
     pool_matches = []
@@ -352,55 +378,77 @@ if st.session_state.stage == "skinny":
                 st.dataframe(df, hide_index=True, use_container_width=True)
 
     st.markdown("---")
-    st.write("There are ties affecting the top 4 positions. Please decide the order with Skinny Singles.")
 
     all_resolved = True
     for p_idx, ties in st.session_state.relevant_ties.items():
         pool_letter = chr(65 + p_idx)
         for t_idx, tie in enumerate(ties):
             key = f"tie_{p_idx}_{t_idx}"
-            st.write(f"**Pool {pool_letter}** – tied at {tie['score']:+d}")
-            st.write(f"Players: {', '.join(tie['players'])}")
-            st.write("Select the order from highest to lowest (click in the order they finished):")
+            players = tie["players"]
+            n = len(players)
+
+            st.subheader(f"Pool {pool_letter} – {n} players tied")
+
+            # Show suggested playoff
+            st.markdown("**Suggested Skinny Singles:**")
+            suggestions = suggest_playoff(players)
+            for s in suggestions:
+                st.write(s)
+
+            st.write("")
+            st.write(f"**Select the winner(s)** (how many needed depends on the spots):")
+
+            # How many winners do we need?
+            # For simplicity we ask for the full ordered winners needed for top 4
+            needed = min(n, 4 - (tie["start_pos"] - 1))
+            if needed < 1:
+                needed = 1
 
             selected = []
-            cols = st.columns(min(len(tie["players"]), 4))
-            for i, p in enumerate(tie["players"]):
+            cols = st.columns(min(n, 4))
+            for i, p in enumerate(players):
                 with cols[i % len(cols)]:
                     if st.checkbox(p, key=f"sk_{key}_{p}"):
                         selected.append(p)
 
-            if len(selected) == len(tie["players"]):
+            if len(selected) >= needed:
                 st.session_state.skinny_results[key] = selected
-                st.success(f"Order set: {' → '.join(selected)}")
+                st.success(f"Selected: {', '.join(selected)}")
             else:
                 all_resolved = False
-                if len(selected) > 0:
-                    st.warning(f"Selected {len(selected)} – need all {len(tie['players'])}")
+                st.warning(f"Please select at least {needed} winner(s)")
 
     if is_admin and all_resolved and st.session_state.skinny_results:
-        if st.button("Apply Skinny Singles & Continue", type="primary"):
-            # Re-order the standings based on skinny results
+        if st.button("Apply Skinny Singles & Continue to Knockout", type="primary"):
+            # Rebuild standings with the selected winners moved to the top of their group
             new_standings = []
             for p_idx, ranking in enumerate(st.session_state.pool_standings):
-                if p_idx in st.session_state.relevant_ties:
-                    # Rebuild ranking with skinny order for tied groups
-                    final_order = []
-                    used = set()
-                    for t_idx, tie in enumerate(st.session_state.relevant_ties[p_idx]):
-                        key = f"tie_{p_idx}_{t_idx}"
-                        ordered = st.session_state.skinny_results.get(key, tie["players"])
-                        for name in ordered:
+                if p_idx not in st.session_state.relevant_ties:
+                    new_standings.append(ranking)
+                    continue
+
+                final_order = []
+                used = set()
+                for t_idx, tie in enumerate(st.session_state.relevant_ties[p_idx]):
+                    key = f"tie_{p_idx}_{t_idx}"
+                    winners = st.session_state.skinny_results.get(key, [])
+                    # Put winners first, then the rest of the tied players
+                    for name in winners:
+                        if name not in used:
                             player = next(r for r in ranking if r["name"] == name)
                             final_order.append(player)
                             used.add(name)
-                    # Add remaining players
-                    for r in ranking:
-                        if r["name"] not in used:
-                            final_order.append(r)
-                    new_standings.append(final_order)
-                else:
-                    new_standings.append(ranking)
+                    for name in tie["players"]:
+                        if name not in used:
+                            player = next(r for r in ranking if r["name"] == name)
+                            final_order.append(player)
+                            used.add(name)
+
+                # Add everyone else
+                for r in ranking:
+                    if r["name"] not in used:
+                        final_order.append(r)
+                new_standings.append(final_order)
 
             st.session_state.pool_standings = new_standings
             st.session_state.stage = "knockout_setup"
