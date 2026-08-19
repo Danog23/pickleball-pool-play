@@ -87,8 +87,29 @@ def calc_standings(pool_players, scores_dict, matches):
     ranking.sort(key=lambda x: (x["diff"], x["wins"]), reverse=True)
     return ranking
 
+def find_relevant_ties(ranking):
+    """Find ties that affect positions 1-4."""
+    ties = []
+    n = len(ranking)
+    if n < 2:
+        return ties
+
+    # We only care about the top 4 positions
+    relevant = ranking[:min(4, n)]
+
+    # Group by (diff, wins)
+    from itertools import groupby
+    for score, group in groupby(relevant, key=lambda x: (x["diff"], x["wins"])):
+        players = [p["name"] for p in group]
+        if len(players) > 1:
+            ties.append({
+                "players": players,
+                "score": score[0],
+                "needed": len(players)  # we need full order
+            })
+    return ties
+
 def build_interleaved_queue(pools):
-    """Build a queue that alternates matches from different pools."""
     pool_matches = []
     for p_idx, pool in enumerate(pools):
         matches = generate_round_robin(pool)
@@ -102,7 +123,6 @@ def build_interleaved_queue(pools):
             })
         pool_matches.append(match_list)
 
-    # Interleave
     interleaved = []
     max_len = max(len(m) for m in pool_matches) if pool_matches else 0
     for i in range(max_len):
@@ -175,7 +195,6 @@ Jamie"""
 
             all_matches = build_interleaved_queue(pools)
 
-            # Assign first matches to courts
             court_status = {}
             for i in range(num_courts):
                 if i < len(all_matches):
@@ -196,6 +215,8 @@ Jamie"""
             st.session_state.match_queue = remaining
             st.session_state.stage = "pool_play"
             st.session_state.pool_standings = None
+            st.session_state.relevant_ties = None
+            st.session_state.skinny_results = {}
             st.session_state.semis = None
             st.session_state.final = None
             st.session_state.final_done = False
@@ -210,7 +231,6 @@ if st.session_state.stage == "pool_play":
 
     st.header("Pool Play")
 
-    # Show pools
     cols = st.columns(len(pools))
     for i, pool in enumerate(pools):
         with cols[i]:
@@ -279,7 +299,6 @@ if st.session_state.stage == "pool_play":
             else:
                 st.info("Free / Finished")
 
-    # Upcoming matches
     if st.session_state.match_queue:
         st.markdown("---")
         st.subheader("Upcoming Matches")
@@ -293,13 +312,13 @@ if st.session_state.stage == "pool_play":
             })
         st.dataframe(pd.DataFrame(upcoming_data), hide_index=True, use_container_width=True)
 
-    # Check if all done
     all_done = all(v is None for v in st.session_state.court_status.values()) and not st.session_state.match_queue
     if all_done:
         st.success("All pool matches completed!")
         if is_admin:
-            if st.button("Calculate Standings → Knockout", type="primary"):
+            if st.button("Calculate Standings + Check Skinny Singles", type="primary"):
                 standings = []
+                all_ties = {}
                 for p_idx, pool in enumerate(pools):
                     matches = generate_round_robin(pool)
                     pool_scores = {}
@@ -309,28 +328,106 @@ if st.session_state.stage == "pool_play":
                             pool_scores[f"m{m_idx}"] = st.session_state.scores[key]
                     ranking = calc_standings(pool, pool_scores, matches)
                     standings.append(ranking)
+                    ties = find_relevant_ties(ranking)
+                    if ties:
+                        all_ties[p_idx] = ties
 
                 st.session_state.pool_standings = standings
-
-                if st.session_state.num_pools == 1:
-                    r = standings[0]
-                    if len(r) >= 4:
-                        st.session_state.final = (
-                            (r[0]["name"], r[1]["name"]),
-                            (r[2]["name"], r[3]["name"])
-                        )
-                    st.session_state.stage = "final"
-                else:
-                    a = standings[0]
-                    b = standings[1]
-                    if len(a) >= 4 and len(b) >= 4:
-                        st.session_state.semis = [
-                            ((a[0]["name"], b[0]["name"]), (a[3]["name"], b[3]["name"])),
-                            ((a[1]["name"], b[1]["name"]), (a[2]["name"], b[2]["name"]))
-                        ]
-                        st.session_state.current_semi = 0
-                    st.session_state.stage = "semis"
+                st.session_state.relevant_ties = all_ties
+                st.session_state.skinny_results = {}
+                st.session_state.stage = "skinny" if all_ties else "knockout_setup"
                 st.rerun()
+
+# ---------- Skinny Singles ----------
+if st.session_state.stage == "skinny":
+    st.header("Skinny Singles Required")
+    is_admin = st.session_state.admin_unlocked
+
+    if st.session_state.pool_standings:
+        cols = st.columns(len(st.session_state.pool_standings))
+        for i, ranking in enumerate(st.session_state.pool_standings):
+            with cols[i]:
+                st.subheader(f"Pool {chr(65+i)} Standings")
+                df = pd.DataFrame([{"#": j+1, "Player": r["name"], "+/−": r["diff"], "Wins": r["wins"]} for j, r in enumerate(ranking)])
+                st.dataframe(df, hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+    st.write("There are ties affecting the top 4 positions. Please decide the order with Skinny Singles.")
+
+    all_resolved = True
+    for p_idx, ties in st.session_state.relevant_ties.items():
+        pool_letter = chr(65 + p_idx)
+        for t_idx, tie in enumerate(ties):
+            key = f"tie_{p_idx}_{t_idx}"
+            st.write(f"**Pool {pool_letter}** – tied at {tie['score']:+d}")
+            st.write(f"Players: {', '.join(tie['players'])}")
+            st.write("Select the order from highest to lowest (click in the order they finished):")
+
+            selected = []
+            cols = st.columns(min(len(tie["players"]), 4))
+            for i, p in enumerate(tie["players"]):
+                with cols[i % len(cols)]:
+                    if st.checkbox(p, key=f"sk_{key}_{p}"):
+                        selected.append(p)
+
+            if len(selected) == len(tie["players"]):
+                st.session_state.skinny_results[key] = selected
+                st.success(f"Order set: {' → '.join(selected)}")
+            else:
+                all_resolved = False
+                if len(selected) > 0:
+                    st.warning(f"Selected {len(selected)} – need all {len(tie['players'])}")
+
+    if is_admin and all_resolved and st.session_state.skinny_results:
+        if st.button("Apply Skinny Singles & Continue", type="primary"):
+            # Re-order the standings based on skinny results
+            new_standings = []
+            for p_idx, ranking in enumerate(st.session_state.pool_standings):
+                if p_idx in st.session_state.relevant_ties:
+                    # Rebuild ranking with skinny order for tied groups
+                    final_order = []
+                    used = set()
+                    for t_idx, tie in enumerate(st.session_state.relevant_ties[p_idx]):
+                        key = f"tie_{p_idx}_{t_idx}"
+                        ordered = st.session_state.skinny_results.get(key, tie["players"])
+                        for name in ordered:
+                            player = next(r for r in ranking if r["name"] == name)
+                            final_order.append(player)
+                            used.add(name)
+                    # Add remaining players
+                    for r in ranking:
+                        if r["name"] not in used:
+                            final_order.append(r)
+                    new_standings.append(final_order)
+                else:
+                    new_standings.append(ranking)
+
+            st.session_state.pool_standings = new_standings
+            st.session_state.stage = "knockout_setup"
+            st.rerun()
+
+# ---------- Knockout Setup ----------
+if st.session_state.stage == "knockout_setup":
+    standings = st.session_state.pool_standings
+    if st.session_state.num_pools == 1:
+        r = standings[0]
+        if len(r) >= 4:
+            st.session_state.final = (
+                (r[0]["name"], r[1]["name"]),
+                (r[2]["name"], r[3]["name"])
+            )
+        st.session_state.stage = "final"
+    else:
+        a = standings[0]
+        b = standings[1]
+        if len(a) >= 4 and len(b) >= 4:
+            st.session_state.semis = [
+                ((a[0]["name"], b[0]["name"]), (a[3]["name"], b[3]["name"])),
+                ((a[1]["name"], b[1]["name"]), (a[2]["name"], b[2]["name"]))
+            ]
+            st.session_state.current_semi = 0
+        st.session_state.stage = "semis"
+    st.rerun()
 
 # ---------- Semi Finals ----------
 if st.session_state.stage == "semis":
