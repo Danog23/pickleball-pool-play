@@ -58,7 +58,6 @@ def generate_round_robin(players):
         ]
     elif n >= 7:
         for i in range(n):
-            sitting = names[i]
             playing = [names[j] for j in range(n) if j != i]
             matches.append(((playing[0], playing[1]), (playing[2], playing[3])))
     return matches
@@ -118,8 +117,15 @@ if "stage" not in st.session_state:
     st.session_state.stage = "setup"
 
 if st.session_state.stage == "setup":
+    st.header("Session Setup")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        num_courts = st.number_input("Number of Courts", 1, 4, 2)
+    with col2:
+        play_to = st.number_input("Play to", 7, 21, 11)
+
     st.header("Enter Players")
-    
     if st.session_state.admin_unlocked:
         st.caption("Enter one name per line, strongest player first (Best → Worst).")
     else:
@@ -135,8 +141,6 @@ Morgan
 Jamie"""
     player_text = st.text_area("Players", value=default, height=220)
 
-    play_to = st.number_input("Play to", 7, 21, 11)
-
     if st.button("Create Pools & Schedule", type="primary"):
         players = [p.strip() for p in player_text.strip().splitlines() if p.strip()]
         if len(players) < 4:
@@ -145,7 +149,7 @@ Jamie"""
             num_pools = decide_pools(len(players))
             pools = snake_seed(players, num_pools)
 
-            # Build full match list for all pools
+            # Build full match list
             all_matches = []
             for p_idx, pool in enumerate(pools):
                 matches = generate_round_robin(pool)
@@ -157,14 +161,25 @@ Jamie"""
                         "key": f"p{p_idx}_m{m_idx}"
                     })
 
+            # Assign first matches to courts
+            court_status = {}
+            for i in range(num_courts):
+                if i < len(all_matches):
+                    court_status[f"Court {i+1}"] = all_matches[i]
+                else:
+                    court_status[f"Court {i+1}"] = None
+
+            remaining = all_matches[num_courts:]
+
             st.session_state.players = players
             st.session_state.pools = pools
             st.session_state.num_pools = num_pools
+            st.session_state.num_courts = num_courts
             st.session_state.play_to = play_to
             st.session_state.scores = {}
             st.session_state.locked = {}
-            st.session_state.match_queue = all_matches
-            st.session_state.current_match = all_matches[0] if all_matches else None
+            st.session_state.court_status = court_status
+            st.session_state.match_queue = remaining
             st.session_state.stage = "pool_play"
             st.session_state.pool_standings = None
             st.session_state.semis = None
@@ -177,6 +192,7 @@ if st.session_state.stage == "pool_play":
     pools = st.session_state.pools
     play_to = st.session_state.play_to
     is_admin = st.session_state.admin_unlocked
+    num_courts = st.session_state.num_courts
 
     st.header("Pool Play")
 
@@ -189,58 +205,86 @@ if st.session_state.stage == "pool_play":
                 st.write(f"{j}. {p}")
 
     st.markdown("---")
+    st.subheader("Courts")
 
-    # Current match board
-    current = st.session_state.get("current_match")
-    if current:
-        t1, t2 = current["match"]
-        key = current["key"]
-        pool_letter = chr(65 + current["pool_idx"])
+    # Show current matches on each court
+    court_cols = st.columns(num_courts)
+    for i, court_name in enumerate([f"Court {j+1}" for j in range(num_courts)]):
+        with court_cols[i]:
+            status = st.session_state.court_status.get(court_name)
+            st.markdown(f"### {court_name}")
 
-        st.subheader(f"Current Match — Pool {pool_letter}")
-        st.write(f"**{t1[0]} & {t1[1]}**  vs  **{t2[0]} & {t2[1]}**")
+            if status:
+                t1, t2 = status["match"]
+                key = status["key"]
+                pool_letter = chr(65 + status["pool_idx"])
 
-        if is_admin:
-            locked = st.session_state.locked.get(key, False)
-            if locked:
-                s1, s2 = st.session_state.scores.get(key, (0, 0))
-                st.write(f"Score: **{s1} – {s2}**")
-                if st.button("🔓 Unlock to Edit"):
-                    st.session_state.locked[key] = False
-                    st.rerun()
+                st.write(f"**Pool {pool_letter}**")
+                st.write(f"**{t1[0]} & {t1[1]}**")
+                st.write("vs")
+                st.write(f"**{t2[0]} & {t2[1]}**")
+
+                if is_admin:
+                    locked = st.session_state.locked.get(key, False)
+                    if locked:
+                        s1, s2 = st.session_state.scores.get(key, (0, 0))
+                        st.write(f"**{s1} – {s2}**")
+                        if st.button("🔓 Unlock", key=f"unlock_{key}"):
+                            st.session_state.locked[key] = False
+                            st.rerun()
+                    else:
+                        s1 = st.number_input("Score 1", 0, 30, st.session_state.scores.get(key, (play_to, play_to-1))[0], key=f"s1_{key}")
+                        s2 = st.number_input("Score 2", 0, 30, st.session_state.scores.get(key, (play_to, play_to-1))[1], key=f"s2_{key}")
+                        
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("Save & Next", key=f"save_{key}", type="primary"):
+                                st.session_state.scores[key] = (s1, s2)
+                                st.session_state.locked[key] = True
+                                # Pull next match
+                                if st.session_state.match_queue:
+                                    next_match = st.session_state.match_queue.pop(0)
+                                    st.session_state.court_status[court_name] = next_match
+                                else:
+                                    st.session_state.court_status[court_name] = None
+                                st.rerun()
+                        with b2:
+                            if st.button("Skip →", key=f"skip_{key}"):
+                                if st.session_state.match_queue:
+                                    skipped = status
+                                    next_match = st.session_state.match_queue.pop(0)
+                                    st.session_state.court_status[court_name] = next_match
+                                    st.session_state.match_queue.append(skipped)
+                                else:
+                                    st.session_state.court_status[court_name] = None
+                                st.rerun()
+                else:
+                    if key in st.session_state.scores:
+                        s1, s2 = st.session_state.scores[key]
+                        st.write(f"**{s1} – {s2}**")
+                    else:
+                        st.caption("In progress...")
             else:
-                c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-                with c1:
-                    s1 = st.number_input("Score 1", 0, 30, st.session_state.scores.get(key, (play_to, play_to-1))[0], key=f"s1_{key}")
-                with c2:
-                    s2 = st.number_input("Score 2", 0, 30, st.session_state.scores.get(key, (play_to, play_to-1))[1], key=f"s2_{key}")
-                with c3:
-                    if st.button("Save & Next", type="primary"):
-                        st.session_state.scores[key] = (s1, s2)
-                        st.session_state.locked[key] = True
-                        # Move to next match
-                        queue = st.session_state.match_queue
-                        if queue and queue[0]["key"] == key:
-                            queue.pop(0)
-                        st.session_state.current_match = queue[0] if queue else None
-                        st.rerun()
-                with c4:
-                    if st.button("Skip →"):
-                        queue = st.session_state.match_queue
-                        if queue and queue[0]["key"] == key:
-                            skipped = queue.pop(0)
-                            queue.append(skipped)
-                        st.session_state.current_match = queue[0] if queue else None
-                        st.rerun()
-        else:
-            if key in st.session_state.scores:
-                s1, s2 = st.session_state.scores[key]
-                st.write(f"Score: **{s1} – {s2}**")
-            else:
-                st.info("Waiting for score...")
-    else:
+                st.info("Free / Finished")
+
+    # Upcoming matches
+    if st.session_state.match_queue:
+        st.markdown("---")
+        st.subheader("Upcoming Matches")
+        upcoming_data = []
+        for m in st.session_state.match_queue[:8]:
+            t1, t2 = m["match"]
+            pool_letter = chr(65 + m["pool_idx"])
+            upcoming_data.append({
+                "Pool": f"Pool {pool_letter}",
+                "Match": f"{t1[0]} & {t1[1]}  vs  {t2[0]} & {t2[1]}"
+            })
+        st.dataframe(pd.DataFrame(upcoming_data), hide_index=True, use_container_width=True)
+
+    # Check if all done
+    all_done = all(v is None for v in st.session_state.court_status.values()) and not st.session_state.match_queue
+    if all_done:
         st.success("All pool matches completed!")
-
         if is_admin:
             if st.button("Calculate Standings → Knockout", type="primary"):
                 standings = []
@@ -272,7 +316,6 @@ if st.session_state.stage == "pool_play":
                             ((a[0]["name"], b[0]["name"]), (a[3]["name"], b[3]["name"])),
                             ((a[1]["name"], b[1]["name"]), (a[2]["name"], b[2]["name"]))
                         ]
-                        st.session_state.semi_queue = [0, 1]
                         st.session_state.current_semi = 0
                     st.session_state.stage = "semis"
                 st.rerun()
