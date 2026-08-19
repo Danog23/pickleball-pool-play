@@ -87,6 +87,30 @@ def calc_standings(pool_players, scores_dict, matches):
     ranking.sort(key=lambda x: (x["diff"], x["wins"]), reverse=True)
     return ranking
 
+def build_interleaved_queue(pools):
+    """Build a queue that alternates matches from different pools."""
+    pool_matches = []
+    for p_idx, pool in enumerate(pools):
+        matches = generate_round_robin(pool)
+        match_list = []
+        for m_idx, match in enumerate(matches):
+            match_list.append({
+                "pool_idx": p_idx,
+                "match_idx": m_idx,
+                "match": match,
+                "key": f"p{p_idx}_m{m_idx}"
+            })
+        pool_matches.append(match_list)
+
+    # Interleave
+    interleaved = []
+    max_len = max(len(m) for m in pool_matches) if pool_matches else 0
+    for i in range(max_len):
+        for p_list in pool_matches:
+            if i < len(p_list):
+                interleaved.append(p_list[i])
+    return interleaved
+
 # ---------- Admin Login ----------
 col1, col2 = st.columns([1, 5])
 with col1:
@@ -149,17 +173,7 @@ Jamie"""
             num_pools = decide_pools(len(players))
             pools = snake_seed(players, num_pools)
 
-            # Build full match list
-            all_matches = []
-            for p_idx, pool in enumerate(pools):
-                matches = generate_round_robin(pool)
-                for m_idx, match in enumerate(matches):
-                    all_matches.append({
-                        "pool_idx": p_idx,
-                        "match_idx": m_idx,
-                        "match": match,
-                        "key": f"p{p_idx}_m{m_idx}"
-                    })
+            all_matches = build_interleaved_queue(pools)
 
             # Assign first matches to courts
             court_status = {}
@@ -207,7 +221,6 @@ if st.session_state.stage == "pool_play":
     st.markdown("---")
     st.subheader("Courts")
 
-    # Show current matches on each court
     court_cols = st.columns(num_courts)
     for i, court_name in enumerate([f"Court {j+1}" for j in range(num_courts)]):
         with court_cols[i]:
@@ -241,7 +254,6 @@ if st.session_state.stage == "pool_play":
                             if st.button("Save & Next", key=f"save_{key}", type="primary"):
                                 st.session_state.scores[key] = (s1, s2)
                                 st.session_state.locked[key] = True
-                                # Pull next match
                                 if st.session_state.match_queue:
                                     next_match = st.session_state.match_queue.pop(0)
                                     st.session_state.court_status[court_name] = next_match
@@ -272,7 +284,7 @@ if st.session_state.stage == "pool_play":
         st.markdown("---")
         st.subheader("Upcoming Matches")
         upcoming_data = []
-        for m in st.session_state.match_queue[:8]:
+        for m in st.session_state.match_queue[:10]:
             t1, t2 = m["match"]
             pool_letter = chr(65 + m["pool_idx"])
             upcoming_data.append({
