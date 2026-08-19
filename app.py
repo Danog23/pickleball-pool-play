@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from collections import defaultdict
-import itertools
 
 st.set_page_config(page_title="Pickleball Pool Play", layout="wide")
 st.title("Pickleball Pool Play + Knockout")
@@ -89,7 +88,6 @@ def calc_standings(pool_players, scores_dict, matches):
     return ranking
 
 def find_relevant_ties(ranking):
-    """Find ties that affect positions 1-4."""
     ties = []
     n = min(4, len(ranking))
     if n < 2:
@@ -111,28 +109,27 @@ def find_relevant_ties(ranking):
     return ties
 
 def suggest_playoff(players):
-    """Return suggested matchups for skinny singles."""
+    """Fair playoff suggestions with NO byes."""
     n = len(players)
     if n == 2:
         return [f"**{players[0]}** vs **{players[1]}**"]
     if n == 3:
         return [
-            f"**{players[0]}** gets a bye",
-            f"**{players[1]}** vs **{players[2]}**",
-            f"Winner plays **{players[0]}**"
+            f"Round 1: **{players[0]}** vs **{players[1]}**",
+            f"Round 2: Winner vs **{players[2]}**",
+            f"Round 3: Loser of Round 1 vs **{players[2]}** (if needed)"
         ]
     if n == 4:
         return [
             f"Semi 1: **{players[0]}** vs **{players[1]}**",
             f"Semi 2: **{players[2]}** vs **{players[3]}**",
-            "Winners play for higher places, Losers play for lower places"
+            "Winners play for 1st/2nd",
+            "Losers play for 3rd/4th"
         ]
-    # Fallback for more than 4
+    # Fallback
     pairs = []
-    for i in range(0, n - 1, 2):
+    for i in range(0, n-1, 2):
         pairs.append(f"**{players[i]}** vs **{players[i+1]}**")
-    if n % 2 == 1:
-        pairs.append(f"**{players[-1]}** gets a bye")
     return pairs
 
 def build_interleaved_queue(pools):
@@ -386,41 +383,46 @@ if st.session_state.stage == "skinny":
             key = f"tie_{p_idx}_{t_idx}"
             players = tie["players"]
             n = len(players)
+            start_pos = tie["start_pos"]
 
-            st.subheader(f"Pool {pool_letter} – {n} players tied")
+            st.subheader(f"Pool {pool_letter} – {n} players tied (affecting positions {start_pos}+)")
 
-            # Show suggested playoff
-            st.markdown("**Suggested Skinny Singles:**")
+            # Show fair playoff format
+            st.markdown("**Recommended Skinny Singles format (no byes):**")
             suggestions = suggest_playoff(players)
             for s in suggestions:
                 st.write(s)
 
             st.write("")
-            st.write(f"**Select the winner(s)** (how many needed depends on the spots):")
+            st.markdown("**Enter the final order after Skinny Singles:**")
 
-            # How many winners do we need?
-            # For simplicity we ask for the full ordered winners needed for top 4
-            needed = min(n, 4 - (tie["start_pos"] - 1))
-            if needed < 1:
-                needed = 1
+            # Ask for each needed position
+            ordered = []
+            available = players[:]
+            positions_needed = list(range(start_pos, start_pos + n))
 
-            selected = []
-            cols = st.columns(min(n, 4))
-            for i, p in enumerate(players):
-                with cols[i % len(cols)]:
-                    if st.checkbox(p, key=f"sk_{key}_{p}"):
-                        selected.append(p)
+            for pos in positions_needed:
+                if not available:
+                    break
+                choice = st.selectbox(
+                    f"Who finished **#{pos}**?",
+                    [""] + available,
+                    key=f"pos_{key}_{pos}"
+                )
+                if choice:
+                    ordered.append(choice)
+                    available = [p for p in available if p != choice]
+                else:
+                    all_resolved = False
 
-            if len(selected) >= needed:
-                st.session_state.skinny_results[key] = selected
-                st.success(f"Selected: {', '.join(selected)}")
+            if len(ordered) == n:
+                st.session_state.skinny_results[key] = ordered
+                st.success(f"Order: {' → '.join(ordered)}")
             else:
                 all_resolved = False
-                st.warning(f"Please select at least {needed} winner(s)")
 
     if is_admin and all_resolved and st.session_state.skinny_results:
         if st.button("Apply Skinny Singles & Continue to Knockout", type="primary"):
-            # Rebuild standings with the selected winners moved to the top of their group
             new_standings = []
             for p_idx, ranking in enumerate(st.session_state.pool_standings):
                 if p_idx not in st.session_state.relevant_ties:
@@ -431,20 +433,12 @@ if st.session_state.stage == "skinny":
                 used = set()
                 for t_idx, tie in enumerate(st.session_state.relevant_ties[p_idx]):
                     key = f"tie_{p_idx}_{t_idx}"
-                    winners = st.session_state.skinny_results.get(key, [])
-                    # Put winners first, then the rest of the tied players
-                    for name in winners:
-                        if name not in used:
-                            player = next(r for r in ranking if r["name"] == name)
-                            final_order.append(player)
-                            used.add(name)
-                    for name in tie["players"]:
-                        if name not in used:
-                            player = next(r for r in ranking if r["name"] == name)
-                            final_order.append(player)
-                            used.add(name)
+                    ordered_names = st.session_state.skinny_results.get(key, [])
+                    for name in ordered_names:
+                        player = next(r for r in ranking if r["name"] == name)
+                        final_order.append(player)
+                        used.add(name)
 
-                # Add everyone else
                 for r in ranking:
                     if r["name"] not in used:
                         final_order.append(r)
