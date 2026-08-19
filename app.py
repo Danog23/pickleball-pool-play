@@ -109,7 +109,6 @@ def find_relevant_ties(ranking):
     return ties
 
 def suggest_playoff(players):
-    """Fair playoff suggestions with NO byes."""
     n = len(players)
     if n == 2:
         return [f"**{players[0]}** vs **{players[1]}**"]
@@ -126,7 +125,6 @@ def suggest_playoff(players):
             "Winners play for 1st/2nd",
             "Losers play for 3rd/4th"
         ]
-    # Fallback
     pairs = []
     for i in range(0, n-1, 2):
         pairs.append(f"**{players[i]}** vs **{players[i+1]}**")
@@ -179,12 +177,16 @@ if st.session_state.get("show_login") and not st.session_state.admin_unlocked:
 
 st.markdown("---")
 
-# ---------- Setup ----------
+# ---------- Setup (Admin only) ----------
 if "stage" not in st.session_state:
     st.session_state.stage = "setup"
 
 if st.session_state.stage == "setup":
-    st.header("Session Setup")
+    if not st.session_state.admin_unlocked:
+        st.info("Waiting for Admin to create the session...")
+        st.stop()
+
+    st.header("Session Setup (Admin only)")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -193,10 +195,7 @@ if st.session_state.stage == "setup":
         play_to = st.number_input("Play to", 7, 21, 11)
 
     st.header("Enter Players")
-    if st.session_state.admin_unlocked:
-        st.caption("Enter one name per line, strongest player first (Best → Worst).")
-    else:
-        st.caption("Enter one name per line.")
+    st.caption("Enter one name per line, strongest player first (Best → Worst).")
 
     default = """Alex
 Jordan
@@ -387,7 +386,6 @@ if st.session_state.stage == "skinny":
 
             st.subheader(f"Pool {pool_letter} – {n} players tied (affecting positions {start_pos}+)")
 
-            # Show fair playoff format
             st.markdown("**Recommended Skinny Singles format (no byes):**")
             suggestions = suggest_playoff(players)
             for s in suggestions:
@@ -396,7 +394,6 @@ if st.session_state.stage == "skinny":
             st.write("")
             st.markdown("**Enter the final order after Skinny Singles:**")
 
-            # Ask for each needed position
             ordered = []
             available = players[:]
             positions_needed = list(range(start_pos, start_pos + n))
